@@ -14,7 +14,7 @@ The packet is a byte buffer with the bits laid out as expected by the different 
 	|--------------------------------------------------|
 	| Layer 2 Header | Layer 3 Header | Layer 4 Header |
 	|--------------------------------------------------|
-	| Data...										   |
+	| Data...                                          |
 	|--------------------------------------------------|
 
 Explanation of the layers (definitely don't quote me on this):
