@@ -2,21 +2,24 @@ use dns_lookup::lookup_host;
 
 use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
 use pnet::packet::ipv4::{self, Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::icmp::{checksum, IcmpCode, IcmpType, MutableIcmpPacket};
+use pnet::packet::icmp::{IcmpCode, IcmpType, IcmpPacket, MutableIcmpPacket};
+use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::MutablePacket;
+use pnet::packet::{Packet, MutablePacket};
+use pnet::packet::util::checksum;
 use pnet_datalink::{MacAddr, NetworkInterface};
 use pnet::datalink::channel;
 use pnet::datalink::Channel::Ethernet;
 
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::time::{Duration, SystemTime};
+
 
 // TODO make this not static, should be able to specify v4 or v6 with a flag
 static IP_VERSION: u8 = 4;
 // The minimum header length is 20 bytes, so this field would be 4.
 // If you add the IP options, that's another 32 bits, and this field would be 5.
-// Technically this could be 24 if you add the IP options to the header.
 // We probably won't use them, so we'll leave it as 20.
 static IPV4_HEADER_LEN: u8 = 20;
 static ICMP_HEADER_LEN: u8 = 8;
@@ -85,11 +88,21 @@ fn main() {
     ip_header.set_checksum(ipv4::checksum(&ip_header.to_immutable()));
     println!("[Layer 3: IP] {} -> {}", ip_header.get_source(), ip_header.get_destination());
 
-    let mut icmp_header = MutableIcmpPacket::new(ip_header.payload_mut()).unwrap();
-    icmp_header.set_icmp_type(IcmpType::new(ECHO_REQUEST_TYPE));
-    icmp_header.set_icmp_code(IcmpCode::new(ECHO_REQUEST_CODE));
-    // TODO Set data if needed
-    icmp_header.set_checksum(checksum(&icmp_header.to_immutable()));
+    // let mut icmp_header = MutableIcmpPacket::new(ip_header.payload_mut()).unwrap();
+    // icmp_header.set_icmp_type(IcmpType::new(ECHO_REQUEST_TYPE));
+    // icmp_header.set_icmp_code(IcmpCode::new(ECHO_REQUEST_CODE));
+    // icmp_header.set_identifier(1234 as u16);
+    // icmp_header.set_sequence_number(0 as u16);
+    // // TODO Set data if needed
+    // icmp_header.set_checksum(checksum(&icmp_header.to_immutable()));
+    let mut echo_request_header = MutableEchoRequestPacket::new(ip_header.payload_mut()).unwrap();
+    echo_request_header.set_icmp_type(IcmpType::new(ECHO_REQUEST_TYPE));
+    echo_request_header.set_icmp_code(IcmpCode::new(ECHO_REQUEST_CODE));
+    echo_request_header.set_identifier(1234 as u16);
+    echo_request_header.set_sequence_number(0 as u16);
+    // TODO
+    echo_request_header.set_checksum(checksum(echo_request_header.packet(), 1));
+
     println!("[Layer 4: ICMP] Echo Request");
 
     println!("\n4. Send the packet and start a timer");
