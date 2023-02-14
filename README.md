@@ -1,8 +1,8 @@
 # Ping (in progress)
 ## Overview
-This is a small program that implements ping from scratch using the [libpnet](https://github.com/libpnet/libpnet) library. I'm using this project as a way to learn networking basics.
+This is a small program that implements ping from scratch using the [libpnet](https://github.com/libpnet/libpnet) library. I'm using this project as a way to learn low-level networking basics.
 
-The way ping works is that you give it a domain name, and the program will do the following (typically in a loop):
+The way ping works is that you give it a domain name, and the program will do the following (typically in a loop, but this code only sends the packet once):
 * Do a DNS lookup of the domain name you provided
 * Construct an ICMP Echo Request packet
 * Send the packet and start a timer
@@ -19,19 +19,25 @@ The packet is a byte buffer with the bits laid out as expected by the different 
 
 Explanation of the layers (definitely don't quote me on this):
 * Layer 1 is the physical layer, which basically specifies which network interface you're using to send packets. `en0` is usually the Wifi network interface on MacBooks. You can learn about the different network interfaces by running `ifconfig -v`. This command shows you all the different network interfaces on your device and some information about them.
-* Layer 2 is the datalink layer. These headers specify how you're gonna get the packet from your device to the internet. All you need to specify here are the source and destination MAC addresses. The source address can be found from `ifconfig -v` (this program uses an API equivalent). **Open question: How are you supposed to figure out the destination MAC address?** I think the destination address is going to be the next neighbor router to send the packet to, but I'm not sure how we would get that information either.
+* Layer 2 is the datalink layer. These headers specify how you're gonna get the packet from your device to the internet. All you need to specify here are the source and destination MAC addresses. The source address can be found from `ifconfig -v` (this program uses an API equivalent). The destination address is going to be the next neighbor router to send the packet to. The most straightforward way to get this (on mac) is to run `netstat -rn` to get the routing tables, find the ip address of the default gateway, and then find the mac address from that. Here's an example:
+	```
+	❯ netstat -rn
+	Routing tables
+
+	Internet:
+	Destination        Gateway            Flags           Netif Expire
+	default            192.168.86.1       UGScg             en0
+	...
+	192.168.86.1       e4:f0:42:ce:f7:48  UHLWIir           en0   1175
+	...
+	```
+	But this code doesn't do that. This code uses a library called `default-net` which uses the std:net libary to [send some UDP packets](https://github.com/shellrow/default-net/blob/main/src/gateway/unix.rs#L27) and then [parses the header of the packet that it just sent](https://github.com/shellrow/default-net/blob/main/src/socket/packet.rs#L78). This already isn't really ideal because the open source `ping` utility only sends a DNS packet and the ICMP packet. Worse still, my Wireshark shows that it sent like 250 of these UDP packets. I have no idea what's going on, but I think it's fine for a purely instructional program.
 * Layer 3 is the network layer. These headers are configuring the packet for Internet Protocol. Currently, this program is stuck to using IPv4, but I'll get to adding IPv6 functionality soon. There are several items in the headers, the code has comments explinaing most of them.
-* Layer 4 is the transport layer. For this program, we're going to configure the headers for an ICMP Echo Request packet.
+* Layer 4 is the transport layer. This is where info for a TCP or UDP packet would exist. For this program though, we're going to configure the headers for an ICMP Echo Request packet.
 * And then you have the data for your packet. This may contain more headers for higher network layers (e.g. HTTP).
 
 ## Usage
-	sudo cargo r google.com
-
-## State of the Union
-* Aside from a bunch of hardcoded values, the packet is configured and sent properly (first Wireshark output below).
-* The response isn't being processed by anything, but we can see the response being sent back to us via Wireshark (second Wireshark output below).
-* There are a few TODOs in the code for configuring the packet the right way. Most of the items are hardcoded to google.com by running `ping google.com` on the side and using the values in those calls as seen in Wireshark (basically looking at the answer key).
-* And the code is laid out horribly.
+	cargo b && sudo cargo r google.com
 
 ## Wireshark Output
 ### Echo Request

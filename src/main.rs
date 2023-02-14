@@ -1,8 +1,11 @@
 use dns_lookup::lookup_host;
 
-use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
-use pnet::packet::ipv4::{self, Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::icmp::{IcmpCode, IcmpType, IcmpPacket, MutableIcmpPacket};
+use default_net::gateway::get_default_gateway;
+
+use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket, EthernetPacket};
+use pnet::packet::icmp::echo_reply::EchoReplyPacket;
+use pnet::packet::ipv4::{self, MutableIpv4Packet, Ipv4Packet};
+use pnet::packet::icmp::{IcmpCode, IcmpType};
 use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::{Packet, MutablePacket};
@@ -13,20 +16,21 @@ use pnet::datalink::Channel::Ethernet;
 
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 
-// TODO make this not static, should be able to specify v4 or v6 with a flag
-static IP_VERSION: u8 = 4;
+// TODO make this not const, should be able to specify v4 or v6 with a flag
+const IP_VERSION: u8 = 4;
 // The minimum header length is 20 bytes, so this field would be 4.
 // If you add the IP options, that's another 32 bits, and this field would be 5.
 // We probably won't use them, so we'll leave it as 20.
-static IPV4_HEADER_LEN: u8 = 20;
-static ICMP_HEADER_LEN: u8 = 8;
-static TEST_DATA_LEN: u8 = 64;
-static HOP_LIMIT: u8 = 64;
-static ECHO_REQUEST_TYPE: u8 = 8;
-static ECHO_REQUEST_CODE: u8 = 0;
+const BUFFER_SIZE: usize = 200;
+const IPV4_HEADER_LEN: u8 = 20;
+const ICMP_HEADER_LEN: u8 = 8;
+const TEST_DATA_LEN: u8 = 64;
+const HOP_LIMIT: u8 = 64;
+const ECHO_REQUEST_TYPE: u8 = 8;
+const ECHO_REQUEST_CODE: u8 = 0;
 
 fn main() {
     println!("Starting ping");
@@ -36,39 +40,45 @@ fn main() {
     println!("Hostname: {}", hostname);
 
     println!("\n2. Get the ip addr of the hostname");
-    let ips: Vec<IpAddr> = lookup_host(&hostname).unwrap();
-    println!("IPs: {:?}", ips);
+    let destination_ips: Vec<IpAddr> = lookup_host(&hostname).unwrap();
+    println!("IPs: {:?}", destination_ips);
 
     println!("\n3. Create the ICMP packet to send to the hostname");
     // Create the packet with a buffer size of 1024 bytes.
     // Create the Ethernet (layer 2) portion of the packet
     let interfaces: Vec<NetworkInterface> = pnet::datalink::interfaces();
-    // This printline is basically the same as ifconfig
-    // println!("Interfaces: {:?}", interfaces);
     let interface = interfaces
         .into_iter()
-        // TODO Don't hardcode this
         .find(|iface| iface.name == "en0")
-        .unwrap();
-    let source_ip = interface
-        .ips
-        .iter()
-        .find(|ip| ip.is_ipv4())
-        .map(|ip| match ip.ip() {
-            IpAddr::V4(ip) => ip,
-            _ => unreachable!(),
-        })
         .unwrap();
     let source_mac = interface.mac.unwrap();
     println!("Source Mac: {}", source_mac);
-    // TODO Make buffer size a const
-    let mut buffer = [0u8; 200];
+    let mut buffer = [0u8; BUFFER_SIZE];
     let mut eth_header = MutableEthernetPacket::new(&mut buffer[..]).unwrap();
-    // TODO Don't hardcode this
-    eth_header.set_destination(MacAddr(0xe4, 0xf0, 0x42, 0xce, 0xf7, 0x48));
+    let destination_mac_address;
+    match get_default_gateway() {
+        Ok(gateway) => {
+            println!("Default Gateway");
+            println!("\tMAC: {}", gateway.mac_addr);
+            println!("\tIP: {}", gateway.ip_addr);
+            destination_mac_address = MacAddr::new(
+                gateway.mac_addr.octets()[0],
+                gateway.mac_addr.octets()[1],
+                gateway.mac_addr.octets()[2],
+                gateway.mac_addr.octets()[3],
+                gateway.mac_addr.octets()[4],
+                gateway.mac_addr.octets()[5]
+            );
+            eth_header.set_destination(destination_mac_address);
+        },
+        Err(e) => {
+            println!("Couldn't get gateway: {}", e);
+        },
+    }
+    // println!("CURRENT TIME: {:?}", SystemTime::now());
     eth_header.set_source(source_mac);
     eth_header.set_ethertype(EtherTypes::Ipv4);
-    println!("[Layer 2: en0] {} -> {}", eth_header.get_source(), eth_header.get_destination());
+    println!("[Layer 2: ethernet] {} -> {}", eth_header.get_source(), eth_header.get_destination());
 
     // Build the IP portion (layer 3) of the packet on top of the ICMP packet
     let mut ip_header = MutableIpv4Packet::new(eth_header.payload_mut()).unwrap();
@@ -81,38 +91,75 @@ fn main() {
     // So effectively, this is the number of hops that a packet can take before it is dropped.
     ip_header.set_ttl(HOP_LIMIT);
     ip_header.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
-    ip_header.set_source(Ipv4Addr::new(192, 168, 86, 20));
+    println!("{}", interface);
+    let source_ip = interface
+        .ips
+        .iter()
+        .find(|ip| ip.is_ipv4())
+        .map(|ip| match ip.ip() {
+            IpAddr::V4(ip) => ip,
+            _ => unreachable!(),
+        })
+        .unwrap();
+    ip_header.set_source(Ipv4Addr::new(source_ip.octets()[0], source_ip.octets()[1], source_ip.octets()[2], source_ip.octets()[3]));
     // Set destination to the ip address from DNS lookup above
-    // TODO Don't hardcode this
-    ip_header.set_destination(Ipv4Addr::new(142, 251, 46, 174));
+    let destination_ip = destination_ips
+        .iter()
+        .find(|ip| ip.is_ipv4())
+        .map(|ip| match ip {
+            IpAddr::V4(ip) => ip,
+            _ => unreachable!(),
+        })
+        .unwrap();
+    ip_header.set_destination(Ipv4Addr::new(destination_ip.octets()[0], destination_ip.octets()[1], destination_ip.octets()[2], destination_ip.octets()[3]));
     ip_header.set_checksum(ipv4::checksum(&ip_header.to_immutable()));
     println!("[Layer 3: IP] {} -> {}", ip_header.get_source(), ip_header.get_destination());
 
-    // let mut icmp_header = MutableIcmpPacket::new(ip_header.payload_mut()).unwrap();
-    // icmp_header.set_icmp_type(IcmpType::new(ECHO_REQUEST_TYPE));
-    // icmp_header.set_icmp_code(IcmpCode::new(ECHO_REQUEST_CODE));
-    // icmp_header.set_identifier(1234 as u16);
-    // icmp_header.set_sequence_number(0 as u16);
-    // // TODO Set data if needed
-    // icmp_header.set_checksum(checksum(&icmp_header.to_immutable()));
     let mut echo_request_header = MutableEchoRequestPacket::new(ip_header.payload_mut()).unwrap();
     echo_request_header.set_icmp_type(IcmpType::new(ECHO_REQUEST_TYPE));
     echo_request_header.set_icmp_code(IcmpCode::new(ECHO_REQUEST_CODE));
     echo_request_header.set_identifier(1234 as u16);
     echo_request_header.set_sequence_number(0 as u16);
-    // TODO
     echo_request_header.set_checksum(checksum(echo_request_header.packet(), 1));
-
-    println!("[Layer 4: ICMP] Echo Request");
+    println!("[Layer 4: ICMP] Echo Request: [Code: {}, Type: {}, Id: {}, Seq: {}]",
+        echo_request_header.get_icmp_type().0,
+        echo_request_header.get_icmp_code().0,
+        echo_request_header.get_identifier(),
+        echo_request_header.get_sequence_number());
 
     println!("\n4. Send the packet and start a timer");
     // Create a channel to send on
-    let mut tx = match channel(&interface, Default::default()) {
-        Ok(Ethernet(tx, _)) => tx,
+    let (mut tx, mut rx) = match channel(&interface, Default::default()) {
+        Ok(Ethernet(tx, rx)) => (tx, rx),
         Ok(_) => panic!("Unhandled channel type"),
         Err(e) => panic!("Unable to create channel: {}", e),
     };
+    let now = SystemTime::now();
     tx.send_to(&buffer, None);
+    // This is to process the echo request packet
+    let _ = match rx.next() {
+        Ok(packet) => packet,
+        Err(e) => panic!("{}", e),
+    };
 
     println!("\n5. Get the response and end the timer and print the timer difference");
+    let echo_reply_raw_packet = match rx.next() {
+        Ok(packet) => packet,
+        Err(e) => panic!("{}", e),
+    };
+    match now.elapsed() {
+        Ok(t) => println!("Latency: {}ms", t.as_millis()),
+        Err(e) => panic!("Unable to get duration: {}", e),
+    };
+    let l2_echo_reply_packet = EthernetPacket::new(echo_reply_raw_packet)
+        .unwrap();
+    let l3_echo_reply_packet = Ipv4Packet::new(l2_echo_reply_packet.payload())
+        .unwrap();
+    let echo_reply_packet = EchoReplyPacket::new(l3_echo_reply_packet.payload())
+        .unwrap();
+    println!("Echo Reply: [Code: {}, Type: {}, Id: {}, Seq: {}]",
+        echo_reply_packet.get_icmp_code().0,
+        echo_reply_packet.get_icmp_type().0,
+        echo_reply_packet.get_identifier(),
+        echo_reply_packet.get_sequence_number());
 }
