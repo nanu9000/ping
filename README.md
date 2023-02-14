@@ -1,4 +1,4 @@
-# Ping (in progress)
+# Ping
 ## Overview
 This is a small program that implements ping from scratch using the [libpnet](https://github.com/libpnet/libpnet) library. I'm using this project as a way to learn low-level networking basics.
 
